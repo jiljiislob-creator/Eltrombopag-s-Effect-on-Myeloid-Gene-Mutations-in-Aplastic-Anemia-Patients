@@ -1,0 +1,497 @@
+---
+title: "RACE XT TP_0m 0.03-0.50 % 20 "
+author: "Anna Muchiewicz"
+date: "02/03/2023"
+output: 
+  html_document:
+    code_folding: hide
+    highlight: zenburn
+    number_sections: yes
+    theme: yeti
+    toc: yes
+---
+
+```{=html}
+<style type="text/css">
+.main-container {
+  max-width: 90%;
+  margin-left: 150px;
+  margin-right: auto;
+}
+</style>
+```
+146 maf file
+
+24 Gene Panel
+
+```{r setup, include=FALSE}
+#library(plotly)
+library(reshape2)
+library(kableExtra)
+library(stringr)
+library(maftools)
+library(ggsci)
+library(data.table)
+#library(DT)
+library(vcfR)
+library(GenomicRanges)
+library(ggrepel)
+library(ggplot2)
+plot_theme <- theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, face = "bold", size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size  = 14),
+        axis.title.y =  element_text(size = 14),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+
+sample_ids <- list.files("~/Desktop/Anna/TP_0m_XT/",
+                     full.names = FALSE,
+                     recursive = FALSE)
+sample_ids <- unlist(lapply(sample_ids, function(x){strsplit(x, split = "\\.")[[1]][1]}))
+
+gene_list <- c("ASXL1","SF3B1","TP53","IDH2","GNAS","DNMT3A","NRAS","U2AF1","MPL","BCOR","KRAS","RUNX1","CBL","BCORL1","EZH2","ZRSR2","FLT3","PIGA","JAK2","SETBP1","NPM1","TET2","IDH1","SRSF2")
+
+
+`%notin%` <- Negate(`%in%`)
+
+# Maftaki Clinvar ORIGIN somatic mi degil mi anlamak icin binaryye cevirip mod 2sine bakiyoruz
+check_binary<-function(l) {
+  lapply(l, FUN = function(p_number){
+  if (!is.na(p_number)){
+    bsum<-0
+    bexp<-1
+    while (p_number > 0) {
+       digit<-p_number %% 2
+       p_number<-floor(p_number / 2)
+       bsum<-bsum + digit * bexp
+       bexp<-bexp * 10
+    }
+    if (nchar(as.character(bsum)) > 1){
+      return(unlist(strsplit(as.character(bsum), ""))[nchar(as.character(bsum))-1])
+    } 
+  }
+  else {
+    return(p_number)
+  }})
+}
+
+setdiffMAF_alt <- function(x, y, mafObj = TRUE, refAltMatch = TRUE, ...) {
+ stopifnot(inherits(x, "MAF"), inherits(y, "MAF"))
+
+  args = list(...)
+  if(length(args) > 0) {
+    x = subsetMaf(x, mafObj = FALSE, ...)
+    y = subsetMaf(y, mafObj = FALSE, ...)
+  }
+
+  if(refAltMatch){
+    maf_x = data.table::rbindlist(l = list(nonsyn = x@data, syn = x@maf.silent), use.names = TRUE, fill = TRUE, idcol = "maf_slot")
+    data.table::setkey(x = maf_x, Chromosome, Start_Position, End_Position)
+    maf_y = data.table::rbindlist(l = list(y@data, y@maf.silent), use.names = TRUE, fill = TRUE)[,.(Chromosome, Start_Position, End_Position, Reference_Allele, Tumor_Seq_Allele2)]
+    data.table::setkey(x = maf_y, Chromosome, Start_Position, End_Position)
+    maf_x[, variant_ID := paste(Chromosome, Start_Position, End_Position, Reference_Allele, Tumor_Seq_Allele2, sep = ":")]
+    maf_y[, variant_ID := paste(Chromosome, Start_Position, End_Position, Reference_Allele, Tumor_Seq_Allele2, sep = ":")]
+  }else{
+    maf_x = data.table::rbindlist(l = list(nonsyn = x@data, syn = x@maf.silent), use.names = TRUE, fill = TRUE, idcol = "maf_slot")
+    data.table::setkey(x = maf_x, Chromosome, Start_Position, End_Position)
+    maf_y = data.table::rbindlist(l = list(y@data, y@maf.silent), use.names = TRUE, fill = TRUE)[,.(Chromosome, Start_Position, End_Position)]
+    data.table::setkey(x = maf_y, Chromosome, Start_Position, End_Position)
+    maf_x[, variant_ID := paste(Chromosome, Start_Position, End_Position, sep = ":")]
+    maf_y[, variant_ID := paste(Chromosome, Start_Position, End_Position, sep = ":")]
+  }
+
+  #Use faster character in vector operation
+  maf_x_unique = maf_x[!maf_x$variant_ID %chin% maf_y$variant_ID]
+
+  if (nrow(maf_x_unique) == 0) {
+    warning("No X specific entries found!")
+    return(NULL)
+  }
+
+  maf_x_unique[,variant_ID := NULL]
+  maf_x_unique = droplevels.data.frame(maf_x_unique)
+
+  if (!mafObj) {
+    maf_x_unique
+  } else {
+    maf_x_unique = split(maf_x_unique, f = maf_x_unique$maf_slot)
+    # maf_x_unique[['syn']][,maf_slot := NULL]
+    maf_x_unique[['nonsyn']][,maf_slot := NULL]
+
+
+    maf_x_unique = MAF(nonSyn = maf_x_unique[['nonsyn']], clinicalData = x@clinical.data, verbose = FALSE)
+    maf_x_unique@clinical.data = droplevels(maf_x_unique@clinical.data)
+  }
+
+  maf_x_unique
+}
+
+subsetMaf_alt <- function (maf, tsb = NULL, genes = NULL, query = NULL, clinQuery = NULL, 
+          ranges = NULL, mult = "first", fields = NULL, mafObj = TRUE, 
+          includeSyn = TRUE, isTCGA = FALSE, dropLevels = TRUE, restrictTo = "all") 
+  {
+    if (all(c(is.null(tsb), is.null(genes), is.null(query), is.null(ranges), 
+              is.null(clinQuery)))) {
+      stop("Please provide sample names or genes or a query or ranges to subset by.")
+    }
+    restrictTo = match.arg(arg = restrictTo, choices = c("all", 
+                                                         "cnv", "mutations"), several.ok = FALSE)
+    maf.silent <- maf@maf.silent
+    maf.dat <- maf@data
+    maf.anno <- data.table::copy(x = maf@clinical.data)
+    if (!is.null(clinQuery)) {
+      if (!is.null(tsb)) {
+        warning("sample names provided to tsb argument will be over written by clinical query", 
+                immediate. = TRUE)
+      }
+      message("-subsetting by clinical data..")
+      maf.anno = maf.anno[eval(parse(text = clinQuery))]
+      tsb = unique(as.character(maf.anno[, Tumor_Sample_Barcode]))
+      if (length(tsb) > 0) {
+        message(paste0("--", length(tsb)), " samples meet the clinical query")
+      }
+      else {
+        if (all(c(is.null(query), is.null(genes)))) {
+          stop("--None of the samples meet the clinical query", 
+               call. = FALSE)
+        }
+        else {
+          message("--None of the samples meet the clinical query")
+          maf.anno <- data.table::copy(x = maf@clinical.data)
+        }
+        tsb = NULL
+      }
+    }
+    if (restrictTo == "cnv") {
+      maf.silent.rest = maf.silent[!Variant_Type %in% "CNV"]
+      maf.silent = maf.silent[Variant_Type %in% "CNV"]
+      maf.dat.rest = maf.dat[!Variant_Type %in% "CNV"]
+      maf.dat = maf.dat[Variant_Type %in% "CNV"]
+    }
+    else if (restrictTo == "mutations") {
+      maf.silent.rest = maf.silent[Variant_Type %in% "CNV"]
+      maf.silent = maf.silent[!Variant_Type %in% "CNV"]
+      maf.dat.rest = maf.dat[Variant_Type %in% "CNV"]
+      maf.dat = maf.dat[!Variant_Type %in% "CNV"]
+    }
+    if (!is.null(tsb)) {
+      tsb = as.character(tsb)
+      if (isTCGA) {
+        tsb = substr(x = tsb, start = 1, stop = 12)
+      }
+      maf.dat = maf.dat[Tumor_Sample_Barcode %in% tsb, ]
+      maf.silent = maf.silent[Tumor_Sample_Barcode %in% tsb, 
+      ]
+    }
+    if (!is.null(genes)) {
+      genes = as.character(genes)
+      maf.dat = maf.dat[Hugo_Symbol %in% genes, ]
+      maf.silent = maf.silent[Hugo_Symbol %in% genes, ]
+    }
+    if (!is.null(query)) {
+      maf.dat = maf.dat[eval(parse(text = query))]
+      # maf.silent = maf.silent[eval(parse(text = query))]
+    }
+    default.fields = c("Hugo_Symbol", "Chromosome", "Start_Position", 
+                       "End_Position", "Reference_Allele", "Tumor_Seq_Allele2", 
+                       "Variant_Classification", "Variant_Type", "Tumor_Sample_Barcode")
+    if (!is.null(fields)) {
+      default.fields = unique(c(default.fields, fields))
+      if (length(default.fields[!default.fields %in% colnames(maf.dat)]) > 
+          0) {
+        message("Missing fields. Ignoring them.. ")
+        print(default.fields[!default.fields %in% colnames(maf.dat)])
+        default.fields = default.fields[default.fields %in% 
+                                          colnames(maf.dat)]
+      }
+      maf.dat = maf.dat[, default.fields, with = FALSE]
+      maf.silent = maf.silent[, default.fields, with = FALSE]
+      if (restrictTo != "all") {
+        maf.dat.rest = maf.dat.rest[, default.fields, with = FALSE]
+        maf.silent.rest = maf.silent.rest[, default.fields, 
+                                          with = FALSE]
+      }
+    }
+    if (restrictTo != "all") {
+      maf.dat = rbind(maf.dat, maf.dat.rest, fill = TRUE, use.names = TRUE)
+      maf.silent = rbind(maf.silent, maf.silent.rest, fill = TRUE, 
+                         use.names = TRUE)
+    }
+    if (!is.null(ranges)) {
+      ranges = data.table::copy(x = ranges)
+      colnames(ranges)[1:3] = c("Chromosome", "Start_Position", 
+                                "End_Position")
+      ranges$Chromosome = as.character(ranges$Chromosome)
+      ranges$Start_Position = as.numeric(as.character(ranges$Start_Position))
+      ranges$End_Position = as.numeric(as.character(ranges$End_Position))
+      data.table::setDT(x = ranges)
+      data.table::setkey(x = ranges, Chromosome, Start_Position, 
+                         End_Position)
+      maf.dat$Chromosome = as.character(maf.dat$Chromosome)
+      maf.dat$Start_Position = as.numeric(as.character(maf.dat$Start_Position))
+      maf.dat$End_Position = as.numeric(as.character(maf.dat$End_Position))
+      maf.silent$Chromosome = as.character(maf.silent$Chromosome)
+      maf.silent$Start_Position = as.numeric(as.character(maf.silent$Start_Position))
+      maf.silent$End_Position = as.numeric(as.character(maf.silent$End_Position))
+      maf.dat = data.table::foverlaps(x = maf.dat, y = ranges, 
+                                      type = "within", nomatch = NULL, verbose = FALSE, 
+                                      mult = mult)
+      maf.silent = data.table::foverlaps(x = maf.silent, y = ranges, 
+                                         type = "within", nomatch = NULL, verbose = FALSE, 
+                                         mult = mult)
+      message(paste0(nrow(maf.dat) + nrow(maf.silent), " variants within provided ranges"))
+    }
+    if (mafObj) {
+      if (dropLevels) {
+        maf.silent = droplevels.data.frame(maf.silent)
+        maf.dat = droplevels.data.frame(maf.dat)
+        maf.anno = droplevels.data.frame(maf.anno)
+      }
+      if (nrow(maf.dat) == 0) {
+        stop("Subsetting has resulted in zero non-synonymous variants!")
+      }
+      m = MAF(nonSyn = maf.dat, syn = maf.silent, clinicalData = maf.anno)
+      return(m)
+    }
+    else {
+      if (includeSyn) {
+        maf.dat = rbind(maf.dat, maf.silent, use.names = TRUE, 
+                        fill = TRUE)
+        if (dropLevels) {
+          maf.dat = droplevels.data.frame(x = maf.dat)
+        }
+        return(maf.dat)
+      }
+      else {
+        if (dropLevels) {
+          maf.dat = droplevels.data.frame(x = maf.dat)
+        }
+        return(maf.dat)
+      }
+    }
+}
+```
+
+```{r,echo=F, eval=T, cache=T, message=F, warning=FALSE, fig.width=20, fig.height=10, results='hide', fig.keep='all'}
+S1_list <- c()
+S2_list <- c()
+S3_list <- c()
+
+KnownSVs <- c()
+NovelSVs <- c()
+
+tmpmaf_list <- c()
+sample_count <- 0
+somatic_sample_count <- 0
+done_sample_list <- c()
+
+for (SAMPLE in sample_ids){
+  sample_count <- sample_count + 1
+  done_sample_list <- c(done_sample_list, SAMPLE)
+  # Read somatic MAF
+  tmp_maf <- read.maf(paste0("~/Desktop/Anna/TP_0m_XT/", SAMPLE, ".SMV.maf"), verbose = FALSE)
+
+  tmp_maf@data$Tumor_Sample_Barcode <- gsub("\\.RGSM", "", tmp_maf@data$Tumor_Sample_Barcode)
+  
+  tryCatch({
+    tmp_maf@data[["gnomADg_AF"]] <- as.numeric(tmp_maf@data[["gnomADg_AF"]])
+    tmp_maf@data[["t_alt_count"]] <- as.numeric(tmp_maf@data[["t_alt_count"]])
+    # tmp_maf@data[["HGVSp_Short"]] <- paste0("p.",
+    #             unlist(lapply(tmp_maf@data[["Amino_acids"]], function(x){strsplit(x, split = "/")[[1]][1]})),
+    #             unlist(lapply(tmp_maf@data[["Protein_position"]], function(x){strsplit(x, split = "/")[[1]][1]})),
+    #             unlist(lapply(tmp_maf@data[["Amino_acids"]], function(x){strsplit(x, split = "/")[[1]][2]})))
+    tmp_maf <- subsetMaf(tmp_maf, query = "t_alt_count/t_depth > 0.02")
+    tmp_maf <- subsetMaf(tmp_maf, query = "t_alt_count/t_depth < 0.50")
+    tmp_maf <- subsetMaf(tmp_maf, query = "t_depth >= 20") 
+  },
+    error = function(err) {next}
+  )
+
+  if (SAMPLE %in% sample_ids){
+    somatic_sample_count <- somatic_sample_count + 1
+    tryCatch({
+      tmp_maf_s <- subsetMaf(tmp_maf, genes = gene_list)
+      # tmp_maf_s@data[tmp_maf_s@data$Hugo_Symbol == "",]
+      # S1 - COSMIC
+      tryCatch({
+        S1_tmp <- subsetMaf(tmp_maf_s, query = "grepl('COSV', Existing_variation)")
+        S1_tmp <- subsetMaf(S1_tmp, query = "!grepl('Benign', ClinVar_CLNSIG) & !grepl('benign', ClinVar_CLNSIG)")
+        S1_tmp <- subsetMaf_alt(S1_tmp, query = "(check_binary(ClinVar_ORIGIN) == '1') | (ClinVar_ORIGIN  == 2) | is.na(ClinVar_ORIGIN)") 
+        S1_tmp@data$Variant_Group <- "Known Somatic"
+        S1_list <- c(S1_list, S1_tmp)},
+        error = function(err) {S1_tmp <<- NULL
+                               return(S1_tmp)}
+      )
+      
+      # S2 - No COSMIC, Pathogenic Clinvar
+        tryCatch({
+          S2_tmp <- subsetMaf(tmp_maf_s, query = "!grepl('COSV', Existing_variation)")
+          S2_tmp <- subsetMaf(S2_tmp, query = "grepl('Pathogenic', ClinVar_CLNSIG) | grepl('Likely_pathogenic', ClinVar_CLNSIG)")
+          S2_tmp <- subsetMaf_alt(S2_tmp, query = "(check_binary(ClinVar_ORIGIN) == '1') | (ClinVar_ORIGIN  == 2) | is.na(ClinVar_ORIGIN)") 
+          S2_tmp@data$Variant_Group <- "Known Somatic"
+          S2_list <- c(S2_list, S2_tmp)},
+          error = function(err) {S2_tmp <<- NULL
+                                 return(S2_tmp)}
+        )
+      
+        # S3 - No COSMIC, Not Pathogenic Clinvar, in LOH region
+      tryCatch({
+        S3_tmp <- subsetMaf(tmp_maf_s, query = "!grepl('COSV', Existing_variation)")
+        S3_tmp <- subsetMaf(S3_tmp, query = "!grepl('Pathogenic', ClinVar_CLNSIG) | !grepl('Likely_pathogenic', ClinVar_CLNSIG)")
+        S3_tmp <- subsetMaf(S3_tmp, query = "!grepl('Benign', ClinVar_CLNSIG) & !grepl('benign', ClinVar_CLNSIG)")
+        S3_tmp <- subsetMaf(S3_tmp, query = "!grepl('rs', dbSNP_RS)")
+        S3_tmp <- subsetMaf(S3_tmp, query = "!grepl('In_Frame_Del', Variant_Classification) & !grepl('In_Frame_Ins', Variant_Classification)")
+        S3_tmp <- subsetMaf(S3_tmp, query = "(t_alt_count/t_depth <= 0.35) | (t_alt_count/t_depth >= 0.65)")
+        S3_tmp@data$Variant_Group <- "Novel Somatic"
+        S3_list <- c(S3_list, S3_tmp)},
+        error = function(err) {S3_tmp <<- NULL
+                               return(S3_tmp)}
+      )},
+      error = function(err) {}
+    )
+  }}
+  
+  
+S1 <- merge_mafs(c(S1_list,S2_list), verbose = F)
+
+S2 <- merge_mafs(c(S3_list), verbose = F)
+
+S3 <- merge_mafs(c(S1_list,S2_list,S3_list), verbose = F)
+#tmp_all <- merge_mafs(tmpmaf_list, verbose =F)
+somatic_RACE <- merge_mafs(c(S1,S2), verbose = F)
+
+maftools::write.mafSummary(somatic_RACE, "~/Desktop/Anna")
+
+```
+
+# Samples Analyzed
+
+```{r,echo=F, eval=T, cache=T, message=F, warning=FALSE, fig.width=20, fig.height=10, results='hide', fig.keep='all'}
+# a <- data.frame(c(length(unique(S1@data$Tumor_Sample_Barcode)),
+#                   sample_count - length(unique(S1@data$Tumor_Sample_Barcode))))
+# #rownames(a) <- c("Tumor-Only", "Normal")
+# colnames(a) <- "Sample"
+# a <- a %>%
+#   arrange(Sample) %>%
+#   mutate(csum = rev(cumsum(rev(Sample))),
+#          pos = Sample/2 + lead(csum, 1),
+#          pos = if_else(is.na(pos), Sample/2, pos),
+#          perc = round(Sample/sum(Sample)*100, 2))
+# 
+# a <- read.csv("~/Documents/Race/XT_process_tp0.csv")
+# 
+# 
+# a_process <- ggplot(a, aes(x = "", y = n, fill = XT_Process)) +
+# geom_bar(stat = "identity", color = "white") +
+# coord_polar("y", start = 0)+
+# theme_void()+
+# geom_label(aes(label = labels),
+#              position = position_stack(vjust = 0.5),
+#              show.legend = FALSE) 
+# 
+# a_process
+
+
+
+```
+
+## Somatic Variants by Group
+
+```{r,echo=F, eval=T, cache=T, message=F, warning=FALSE, fig.width=20, fig.height=10, results='hide', fig.keep='all'}
+var_counts <- rbind(cbind(S1@variants.per.sample, "Known"),
+                    cbind(S2@variants.per.sample, "Novel"))
+colnames(var_counts) <- c("Sample_ID", "variants", "group")
+var_counts$Sample_ID <- gsub("\\.RGSM", "", var_counts$Sample_ID)
+
+g <- ggplot(var_counts, aes(x=Sample_ID, y=variants, fill = group)) +
+  geom_bar(stat="identity", width=0.6, position = position_dodge(width=0.7)) +
+  geom_text(aes(Sample_ID, variants, label = variants, group = group), 
+            position = position_dodge(width = .7), angle = 90, hjust = -0.3) +
+  plot_theme +
+  ggtitle("Somatic Variant Counts") +
+  scale_fill_aaas()
+g
+
+#[var_counts$group == "Known",]
+```
+
+# Known Somatic
+
+## Known Somatic Oncoplot (top 50)
+
+```{r,echo=F, eval=T, message=F, warning=FALSE, fig.width=20, fig.height=20}
+oncoplot(maf = S1, 
+         top = 50, 
+         showTumorSampleBarcodes = T,
+         gene_mar = 10,
+         barcode_mar = 10,
+         showTitle = F,)
+```
+
+## Known Somatic VAF
+
+```{r,echo=F, eval=T, message=F, warning=FALSE, fig.width=20, fig.height=10}
+ plotVaf(S1, vafCol = NULL, 
+         top = 50,
+         keepGeneOrder = T,
+         orderByMedian = F)
+```
+
+# Novel Somatic
+
+## Novel Somatic Oncoplot (top 50)
+
+```{r,echo=F, eval=T, message=F, warning=FALSE, fig.width=20, fig.height=20}
+
+oncoplot(maf = S2, 
+         top = 50, 
+         showTumorSampleBarcodes = T,
+         gene_mar = 10,
+         barcode_mar = 10,
+         showTitle = F,)
+```
+
+## Noval Somatic VAF
+
+```{r,echo=F, eval=T, message=F, warning=FALSE, fig.width=20, fig.height=10}
+
+ plotVaf(S2, vafCol = NULL, 
+         top = 50,
+         keepGeneOrder = T,
+         orderByMedian = F)
+```
+
+# Known and Novel Somatic
+
+## Known and Novel Somatic Oncoplot (top 50)
+
+```{r,echo=F, eval=T, message=F, warning=FALSE, fig.width=40, fig.height=40}
+
+oncoplot(maf = (S3), 
+         top = 50, 
+         showTumorSampleBarcodes = T,
+         gene_mar = 10,
+         barcode_mar = 10,
+         showTitle = F,)
+```
+
+# Variants Table
+
+```{r,echo=F, eval=T, message=F, warning=FALSE, fig.width=20, fig.height=20}
+somatic_RACE@data$Somatic_Status <- "Somatic"
+# germline_SAM_AML@data$Somatic_Status <- "Germline"
+# 
+variants <- rbind(somatic_RACE@data, fill = T)
+variants$VAF <- round(variants$t_alt_count / variants$t_depth, 2)
+#variants <- variants[(variants$Variant_Group != "Novel Somatic"),]
+#variants <- variants[(variants$Variant_Group != "Novel Germline") & (variants$Variant_Group != "Novel Somatic"),]
+variants <- variants[,c("Tumor_Sample_Barcode", "Hugo_Symbol", "Chromosome", "Start_Position",
+                         "End_Position", "Variant_Type", "HGVSp_Short", "HGVSp", "VAF", "Somatic_Status",
+                         "Variant_Group", "Existing_variation","ClinVar_ORIGIN","t_depth", "ClinVar",	"ClinVar_CLNSIG",	"ClinVar_CLNREVSTAT")]
+# 
+ DT::datatable(variants, rownames = F, filter = "top")
+
+ write.csv( variants,"~/Documents/Race/xt_tp0_variants.csv")
+```
